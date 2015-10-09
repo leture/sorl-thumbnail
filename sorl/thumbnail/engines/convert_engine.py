@@ -2,15 +2,15 @@ from __future__ import unicode_literals, with_statement
 import re
 import os
 import subprocess
-import tempfile
-from tempfile import NamedTemporaryFile
 
-from django.utils.datastructures import SortedDict
 from django.utils.encoding import smart_str
+from django.core.files.temp import NamedTemporaryFile
 
 from sorl.thumbnail.base import EXTENSIONS
+from sorl.thumbnail.compat import b
 from sorl.thumbnail.conf import settings
 from sorl.thumbnail.engines.base import EngineBase
+from sorl.thumbnail.compat import OrderedDict
 
 
 size_re = re.compile(r'^(?:.+) (?:[A-Z]+) (?P<x>\d+)x(?P<y>\d+)')
@@ -49,11 +49,8 @@ class Engine(EngineBase):
 
         suffix = '.%s' % EXTENSIONS[options['format']]
 
-        if os.name == 'nt':
-            os_handle, file_path = tempfile.mkstemp(suffix=suffix)
-            os.close(os_handle)
-
-            args.append(file_path)
+        with NamedTemporaryFile(suffix=suffix, mode='rb') as fp:
+            args.append(fp.name)
             args = map(smart_str, args)
             p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             p.wait()
@@ -62,22 +59,7 @@ class Engine(EngineBase):
             if err:
                 raise Exception(err)
 
-            with open(file_path, 'rb') as fp:
-                thumbnail.write(fp.read())
-
-            os.remove(file_path)
-        else:
-            with NamedTemporaryFile(suffix=suffix, mode='rb') as fp:
-                args.append(fp.name)
-                args = map(smart_str, args)
-                p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                p.wait()
-                out, err = p.communicate()
-
-                if err:
-                    raise Exception(err)
-
-                thumbnail.write(fp.read())
+            thumbnail.write(fp.read())
 
     def cleanup(self, image):
         os.remove(image['source'])  # we should not need this now
@@ -88,7 +70,7 @@ class Engine(EngineBase):
         """
         with NamedTemporaryFile(mode='wb', delete=False) as fp:
             fp.write(source.read())
-        return {'source': fp.name, 'options': SortedDict(), 'size': None}
+        return {'source': fp.name, 'options': OrderedDict(), 'size': None}
 
     def get_image_size(self, image):
         """
@@ -108,28 +90,13 @@ class Engine(EngineBase):
         This is not very good for imagemagick because it will say anything is
         valid that it can use as input.
         """
-        if os.name == 'nt':
-            os_handle, file_path = tempfile.mkstemp()
-            os.close(os_handle)
-
-            with open(file_path, 'wb') as fp:
-                fp.write(raw_data)
-                fp.flush()
-
+        with NamedTemporaryFile(mode='wb') as fp:
+            fp.write(raw_data)
+            fp.flush()
             args = settings.THUMBNAIL_IDENTIFY.split(' ')
             args.append(fp.name)
             p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             retcode = p.wait()
-
-            os.remove(file_path)
-        else:
-            with NamedTemporaryFile(mode='wb') as fp:
-                fp.write(raw_data)
-                fp.flush()
-                args = settings.THUMBNAIL_IDENTIFY.split(' ')
-                args.append(fp.name)
-                p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                retcode = p.wait()
         return retcode == 0
 
     def _orientation(self, image):
@@ -142,7 +109,7 @@ class Engine(EngineBase):
             p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             p.wait()
             result = p.stdout.read().strip()
-            if result and result != 'unknown':
+            if result and result != b('unknown'):
                 result = int(result)
                 options = image['options']
                 if result == 2:
@@ -172,7 +139,6 @@ class Engine(EngineBase):
         `Valid colorspaces
         <http://www.graphicsmagick.org/GraphicsMagick.html#details-colorspace>`_.
         Backends need to implement the following::
-
             RGB, GRAY
         """
         image['options']['colorspace'] = colorspace
